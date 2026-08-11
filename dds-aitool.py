@@ -6,16 +6,18 @@ import requests
 import os
 import mimetypes
 from datetime import datetime
+import time
+import threading
 
 # ページ設定
 st.set_page_config(
-    page_title="DDS + DeepSeek 統合ツール",
+    page_title="DDS + AI 統合ツール",
     page_icon="🔒",
     layout="wide"
 )
 
-st.title("🔒 DDS + DeepSeek 統合コンテンツ検査ツール")
-st.caption("DDSでポリシー違反をチェック後、DeepSeek APIで応答を生成")
+st.title("🔒 DDS + AI 統合コンテンツ検査ツール")
+st.caption("DDSでポリシー違反をチェック後、AI APIで応答を生成")
 
 # ==================== 初期化 ====================
 if "messages" not in st.session_state:
@@ -29,8 +31,69 @@ if "filters" not in st.session_state:
     ]
 if "dds_configured" not in st.session_state:
     st.session_state.dds_configured = False
-if "deepseek_configured" not in st.session_state:
-    st.session_state.deepseek_configured = False
+if "ai_configured" not in st.session_state:
+    st.session_state.ai_configured = False
+if "uploaded_file_info" not in st.session_state:
+    st.session_state.uploaded_file_info = None
+if "file_checked" not in st.session_state:
+    st.session_state.file_checked = False
+if "file_violations" not in st.session_state:
+    st.session_state.file_violations = []
+if "file_approved" not in st.session_state:
+    st.session_state.file_approved = False
+if "file_data" not in st.session_state:
+    st.session_state.file_data = None
+if "filename" not in st.session_state:
+    st.session_state.filename = None
+if "ai_api_key" not in st.session_state:
+    st.session_state.ai_api_key = ""
+if "ai_api_url" not in st.session_state:
+    st.session_state.ai_api_url = ""
+if "ai_model" not in st.session_state:
+    st.session_state.ai_model = ""
+
+# ==================== AIプロバイダー設定 ====================
+AI_PROVIDERS = {
+    "DeepSeek": {
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "models": ["deepseek-chat", "deepseek-coder"],
+        "default_model": "deepseek-chat",
+        "api_key_required": True
+    },
+    "OpenAI": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "models": ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
+        "default_model": "gpt-3.5-turbo",
+        "api_key_required": True
+    },
+    "ローカル (LM Studio)": {
+        "url": "http://localhost:1234/v1",
+        "models": ["Qwen3 8B - Q4_K_M", "llama3-8b", "mistral-7b", "phi-3", "gemma-2b"],
+        "default_model": "Qwen3 8B - Q4_K_M",
+        "api_key_required": False,
+        "default_api_key": "1234"
+    },
+    "ローカル (Ollama)": {
+        "url": "http://localhost:11434/v1/chat/completions",
+        "models": ["llama3", "mistral", "phi3", "gemma", "qwen"],
+        "default_model": "llama3",
+        "api_key_required": False,
+        "default_api_key": "ollama"
+    },
+    "Groq": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "models": ["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma2-9b-it"],
+        "default_model": "llama3-70b-8192",
+        "api_key_required": True
+    },
+    "その他 (カスタム)": {
+        "url": "",
+        "models": [],
+        "default_model": "",
+        "api_key_required": True,
+        "custom": True
+    }
+}
 
 # ==================== MIMEタイプ関数 ====================
 def get_mime_type(filename):
@@ -137,12 +200,46 @@ def check_dds(content, content_type="text", filename=None, file_data=None):
         st.error(f"DDSチェックエラー: {e}")
         return [], None
 
-# ==================== DeepSeek API呼び出し ====================
-def call_deepseek(messages, max_tokens=200):
-    """DeepSeek APIを呼び出し"""
+# ==================== AI API呼び出し（汎用） ====================
+def normalize_api_url(url):
+    """API URLを正規化する"""
+    url = url.strip()
+    if url.endswith('/v1'):
+        return url + '/chat/completions'
+    if url.endswith('/v1/'):
+        return url + 'chat/completions'
+    if not url.endswith('/chat/completions') and not url.endswith('/completions'):
+        if not url.endswith('/'):
+            return url + '/v1/chat/completions'
+        else:
+            return url + 'v1/chat/completions'
+    return url
+
+def call_ai_api(messages, max_tokens=200):
+    """
+    汎用AI APIを呼び出し
+    設定されたAPI URL、API Key、モデル名を使用
+    """
     try:
-        api_key = st.session_state.deepseek_api_key
-        api_url = st.session_state.deepseek_api_url
+        api_key = st.session_state.ai_api_key
+        api_url = normalize_api_url(st.session_state.ai_api_url)
+        model_name = st.session_state.ai_model
+        
+        if not api_url or not model_name:
+            st.error("AI設定が不完全です。プロバイダーとモデルを選択してください。")
+            return None
+        
+        # APIキーが必須だが空の場合
+        provider = st.session_state.selected_provider
+        if AI_PROVIDERS.get(provider, {}).get("api_key_required", True) and not api_key:
+            st.error(f"{provider}はAPI Keyが必須です。API Keyを入力してください。")
+            return None
+        
+        # デバッグ情報
+        if st.session_state.get("debug_mode", False):
+            st.write(f"**API URL:** {api_url}")
+            st.write(f"**モデル:** {model_name}")
+            st.write(f"**プロバイダー:** {provider}")
         
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -150,7 +247,7 @@ def call_deepseek(messages, max_tokens=200):
         }
         
         data = {
-            "model": "deepseek-chat",
+            "model": model_name,
             "messages": messages,
             "max_tokens": max_tokens,
             "temperature": 0.7
@@ -160,13 +257,17 @@ def call_deepseek(messages, max_tokens=200):
         
         if response.status_code == 200:
             result = response.json()
-            return result["choices"][0]["message"]["content"]
+            if "choices" in result and len(result["choices"]) > 0:
+                return result["choices"][0]["message"]["content"]
+            else:
+                st.error(f"予期しないレスポンス形式: {result}")
+                return None
         else:
-            st.error(f"DeepSeek APIエラー: {response.status_code} - {response.text}")
+            st.error(f"AI APIエラー: {response.status_code} - {response.text}")
             return None
             
     except Exception as e:
-        st.error(f"DeepSeek呼び出しエラー: {e}")
+        st.error(f"AI API呼び出しエラー: {e}")
         return None
 
 # ==================== サイドバー設定 ====================
@@ -177,37 +278,106 @@ with st.sidebar:
     st.subheader("🔍 DDS設定")
     dds_host = st.text_input("DDSサーバーIP", value="192.168.2.132")
     dds_port = st.text_input("ポート", value="443")
-    use_ssl = st.checkbox("SSL/TLSを使用", value=True)
+    use_ssl = st.checkbox("SSL/TLSを使用", value=False)
     protocol = "https" if use_ssl else "http"
     st.session_state.dds_url = f"{protocol}://{dds_host}:{dds_port}/v2.0/DetectionRequests"
     st.session_state.verify_ssl = use_ssl
     
     st.divider()
     
-    # DeepSeek設定
-    st.subheader("🤖 DeepSeek設定")
-    st.session_state.deepseek_api_url = st.text_input(
-        "DeepSeek API URL",
-        value="https://api.deepseek.com/v1/chat/completions"
-    )
-    st.session_state.deepseek_api_key = st.text_input(
-        "API Key",
-        type="password",
-        placeholder="sk-... を入力"
-    )
+    # AI設定（統合）
+    st.subheader("🤖 AI設定")
     
-    if st.button("🔗 DeepSeek接続テスト", use_container_width=True):
-        if st.session_state.deepseek_api_key:
-            test_result = call_deepseek([
+    # プロバイダー選択
+    provider_options = list(AI_PROVIDERS.keys())
+    selected_provider = st.selectbox(
+        "AIプロバイダー",
+        provider_options,
+        index=0,
+        help="使用するAIプロバイダーを選択してください"
+    )
+    st.session_state.selected_provider = selected_provider
+    
+    provider_config = AI_PROVIDERS[selected_provider]
+    
+    # プロバイダーに応じた設定を自動適用
+    if provider_config.get("custom", False):
+        # カスタム（その他）の場合
+        st.session_state.ai_api_url = st.text_input(
+            "API URL (カスタム)",
+            value=st.session_state.ai_api_url,
+            placeholder="https://your-api-endpoint.com/v1/chat/completions",
+            help="カスタムAPIのエンドポイントURLを入力してください"
+        )
+        
+        st.session_state.ai_model = st.text_input(
+            "モデル名 (カスタム)",
+            value=st.session_state.ai_model,
+            placeholder="your-model-name",
+            help="使用するモデル名を入力してください"
+        )
+        
+        st.session_state.ai_api_key = st.text_input(
+            "API Key",
+            value=st.session_state.ai_api_key,
+            type="password",
+            placeholder="APIキーを入力",
+            help="APIアクセス用の認証キー"
+        )
+    else:
+        # プリセットプロバイダー
+        # URLを自動設定
+        st.session_state.ai_api_url = provider_config["url"]
+        st.info(f"📡 API URL: {provider_config['url']}")
+        
+        # モデル選択
+        if provider_config["models"]:
+            selected_model = st.selectbox(
+                "モデル",
+                provider_config["models"],
+                index=0,
+                help="使用するモデルを選択してください"
+            )
+            st.session_state.ai_model = selected_model
+        else:
+            st.session_state.ai_model = provider_config["default_model"]
+            st.info(f"🤖 モデル: {provider_config['default_model']}")
+        
+        # API Key設定
+        if provider_config.get("api_key_required", True):
+            st.session_state.ai_api_key = st.text_input(
+                "API Key",
+                value=st.session_state.ai_api_key,
+                type="password",
+                placeholder="APIキーを入力してください",
+                help="APIアクセス用の認証キー"
+            )
+        else:
+            # APIキーが不要な場合（ローカルなど）
+            default_key = provider_config.get("default_api_key", "")
+            st.session_state.ai_api_key = default_key
+            st.info(f"🔑 API Key: {default_key} (自動設定)")
+    
+    # デバッグモード
+    debug_mode = st.checkbox("🐛 デバッグモード", value=False, help="APIリクエストの詳細を表示")
+    st.session_state.debug_mode = debug_mode
+    
+    # 接続テストボタン
+    if st.button("🔗 AI接続テスト", use_container_width=True):
+        if st.session_state.ai_api_url and st.session_state.ai_model:
+            normalized_url = normalize_api_url(st.session_state.ai_api_url)
+            st.info(f"📌 正規化されたURL: {normalized_url}")
+            
+            test_result = call_ai_api([
                 {"role": "user", "content": "Hello, this is a test. Please respond with 'OK'."}
             ], max_tokens=10)
             if test_result:
-                st.success("✅ DeepSeek接続成功！")
-                st.session_state.deepseek_configured = True
+                st.success(f"✅ AI接続成功！ (プロバイダー: {selected_provider}, モデル: {st.session_state.ai_model})")
+                st.session_state.ai_configured = True
             else:
-                st.error("❌ DeepSeek接続失敗。APIキーとURLを確認してください。")
+                st.error("❌ AI接続失敗。設定を確認してください。")
         else:
-            st.warning("⚠️ API Keyを入力してください")
+            st.warning("⚠️ API URLとモデル名を確認してください")
     
     st.divider()
     
@@ -248,11 +418,14 @@ with st.sidebar:
     
     st.divider()
     
-    # トランザクションID
     st.text_input("トランザクションID", value=st.session_state.txid, disabled=True)
     if st.button("🔄 新しいIDを生成", use_container_width=True):
         st.session_state.txid = str(uuid.uuid4())
         st.rerun()
+    
+    st.divider()
+    st.caption(f"📡 プロバイダー: **{st.session_state.get('selected_provider', '未設定')}**")
+    st.caption(f"🤖 モデル: **{st.session_state.get('ai_model', '未設定')}**")
 
 # ==================== メイン画面 ====================
 # チャット履歴表示
@@ -264,55 +437,107 @@ with chat_container:
             if "violations" in message and message["violations"]:
                 st.error(f"🚫 ポリシー違反: {', '.join([v['name'] for v in message['violations']])}")
 
-# 入力エリア
-input_col1, input_col2 = st.columns([3, 1])
+# ==================== ファイルアップロードエリア ====================
+st.subheader("📎 ファイルアップロード")
+st.caption("ファイルを選択すると自動的にDDSで検査を実行します")
 
-with input_col1:
-    user_input = st.chat_input("メッセージを入力してください...")
+uploaded_file = st.file_uploader(
+    "ファイル選択",
+    type=[".txt", ".doc", ".docx", ".xls", ".xlsx", ".pdf", ".csv", ".json", ".xml", ".zip"],
+    key="file_uploader",
+    label_visibility="collapsed"
+)
 
-with input_col2:
-    uploaded_file = st.file_uploader(
-        "📎 ファイル添付",
-        type=[".txt", ".doc", ".docx", ".xls", ".xlsx", ".pdf", ".csv", ".json", ".xml", ".zip"],
-        key="file_uploader"
-    )
-
-# アップロードファイル情報表示
+# ファイルがアップロードされた場合の処理
 if uploaded_file:
-    st.info(f"📎 添付ファイル: {uploaded_file.name} ({uploaded_file.size/1024:.1f} KB)")
+    # 前回と異なるファイルの場合、リセット
+    if st.session_state.filename != uploaded_file.name:
+        st.session_state.file_checked = False
+        st.session_state.file_violations = []
+        st.session_state.file_approved = False
+        st.session_state.filename = uploaded_file.name
+        st.session_state.file_data = uploaded_file.read()
+        st.session_state.file_checked = False
+    
+    # ファイル情報表示
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info(f"📎 ファイル: {st.session_state.filename}")
+    with col2:
+        st.info(f"📊 サイズ: {len(st.session_state.file_data)/1024:.1f} KB")
+    with col3:
+        st.info(f"📝 MIME: {get_mime_type(st.session_state.filename)}")
+    
+    # まだ検査していない場合、DDSで検査
+    if not st.session_state.file_checked:
+        with st.spinner(f"🔍 DDSでファイルを検査中... (ファイル: {st.session_state.filename})"):
+            # プログレス表示用
+            progress_bar = st.progress(0)
+            for i in range(100):
+                time.sleep(0.02)
+                progress_bar.progress(i + 1)
+            progress_bar.empty()
+            
+            # DDS検査実行
+            violations, request_id = check_dds(
+                "", 
+                "file", 
+                st.session_state.filename, 
+                st.session_state.file_data
+            )
+            
+            st.session_state.file_violations = violations
+            st.session_state.file_checked = True
+            
+            if violations:
+                st.session_state.file_approved = False
+                # 違反表示
+                policy_names = [v["name"] for v in violations]
+                st.error(f"🚫 ポリシー違反: {', '.join(policy_names)}")
+                st.warning("⚠️ このファイルはポリシーに違反しているため、AIに送信できません")
+            else:
+                st.session_state.file_approved = True
+                st.success(f"✅ ファイル検査完了: ポリシー違反はありません (Request ID: {request_id})")
+                st.info("💬 メッセージを入力して送信すると、このファイルが添付されてAIに送信されます")
+    
+    # 検査済みの場合の表示
+    else:
+        if st.session_state.file_violations:
+            policy_names = [v["name"] for v in st.session_state.file_violations]
+            st.error(f"🚫 ポリシー違反: {', '.join(policy_names)}")
+            st.warning("⚠️ このファイルはポリシーに違反しているため、AIに送信できません")
+        else:
+            st.success("✅ ファイルは検査済み: ポリシー違反はありません")
+            st.info("💬 メッセージを入力して送信すると、このファイルが添付されてAIに送信されます")
+
+# ==================== メッセージ入力エリア ====================
+st.divider()
+
+# ファイルのみアップロードされた場合のメッセージ
+if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
+    placeholder_text = "ファイルがアップロードされています。何を聞きたいですか？"
+elif uploaded_file and st.session_state.file_violations:
+    placeholder_text = "ファイルがポリシー違反のため、メッセージのみ送信できます"
+else:
+    placeholder_text = "メッセージを入力してください..."
+
+user_input = st.chat_input(placeholder_text)
 
 # ==================== メッセージ処理 ====================
-if user_input or uploaded_file:
-    # 送信内容の準備
-    message_content = user_input or ""
-    file_data = None
-    filename = None
-    
-    if uploaded_file:
-        file_data = uploaded_file.read()
-        filename = uploaded_file.name
-        if not message_content:
-            message_content = f"ファイル: {filename}"
-    
+if user_input:
     # ユーザーメッセージを表示
     with st.chat_message("user"):
-        if user_input:
-            st.write(user_input)
-        if uploaded_file:
-            st.write(f"📎 {filename}")
+        st.write(user_input)
+        if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
+            st.write(f"📎 {st.session_state.filename} (添付済み)")
     
-    # ===== DDSチェック =====
-    with st.spinner("🔍 DDSでポリシーチェック中..."):
+    # ===== DDSチェック（メッセージ） =====
+    with st.spinner("🔍 DDSでメッセージをチェック中..."):
         violations = []
         
         # テキストメッセージをチェック
         if user_input:
             v, _ = check_dds(user_input, "text")
-            violations.extend(v)
-        
-        # ファイルをチェック
-        if uploaded_file and file_data:
-            v, _ = check_dds("", "file", filename, file_data)
             violations.extend(v)
     
     # ===== DDS結果処理 =====
@@ -331,34 +556,69 @@ if user_input or uploaded_file:
             st.error(error_msg)
         
     else:
-        # ポリシー違反なし → DeepSeekに送信
-        with st.spinner("🤖 DeepSeekに送信中..."):
-            # DeepSeek用メッセージ作成
-            deepseek_messages = []
+        # メッセージがクリア - AIに送信
+        file_to_send = None
+        filename_to_send = None
+        
+        if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
+            file_to_send = st.session_state.file_data
+            filename_to_send = st.session_state.filename
+        
+        # AI送信開始時間
+        start_time = time.time()
+        
+        # プログレス表示用のプレースホルダー
+        status_placeholder = st.empty()
+        
+        with st.spinner(f"🤖 {st.session_state.ai_model} に送信中..."):
+            # 経過時間表示用のループ
+            def update_status():
+                elapsed = 0
+                while True:
+                    time.sleep(1)
+                    elapsed += 1
+                    status_placeholder.info(f"⏳ AI応答を待っています... ({elapsed}秒経過)")
+                    if elapsed > 10:
+                        status_placeholder.info(f"⏳ AI応答を待っています... ({elapsed}秒経過) 少々お待ちください")
+                    if elapsed > 30:
+                        status_placeholder.warning(f"⏳ AI応答を待っています... ({elapsed}秒経過) 応答に時間がかかっています")
+            
+            # ステータス更新スレッド開始
+            status_thread = threading.Thread(target=update_status, daemon=True)
+            status_thread.start()
+            
+            # AI用メッセージ作成
+            ai_messages = []
             
             # 過去の履歴を追加（違反メッセージは除く）
             for msg in st.session_state.messages:
                 if msg["role"] != "assistant" or "violations" not in msg:
-                    deepseek_messages.append({"role": msg["role"], "content": msg["content"]})
+                    ai_messages.append({"role": msg["role"], "content": msg["content"]})
             
             # 現在のメッセージを追加
-            current_msg = user_input or f"ファイル: {filename}"
-            if uploaded_file:
-                current_msg += f"\n[添付ファイル: {filename}, サイズ: {len(file_data)}バイト]"
-            deepseek_messages.append({"role": "user", "content": current_msg})
+            current_msg = user_input
+            if file_to_send and filename_to_send:
+                current_msg += f"\n[添付ファイル: {filename_to_send}, サイズ: {len(file_to_send)}バイト]"
             
-            # DeepSeek呼び出し
-            deepseek_response = call_deepseek(deepseek_messages, max_tokens=200)
+            ai_messages.append({"role": "user", "content": current_msg})
             
-            if deepseek_response:
-                # DeepSeekの応答をDDSでチェック
-                with st.spinner("🔍 DeepSeek応答をDDSで再チェック中..."):
-                    v, _ = check_dds(deepseek_response, "text")
+            # AI呼び出し
+            ai_response = call_ai_api(ai_messages, max_tokens=200)
+            
+            # ステータス更新を停止
+            status_placeholder.empty()
+            
+            elapsed_time = time.time() - start_time
+            
+            if ai_response:
+                # AIの応答をDDSでチェック
+                with st.spinner("🔍 AI応答をDDSで再チェック中..."):
+                    v, _ = check_dds(ai_response, "text")
                 
                 if v:
-                    # DeepSeek応答がポリシー違反
+                    # AI応答がポリシー違反
                     policy_names = [v["name"] for v in v]
-                    error_msg = f"🚫 DeepSeekの応答が以下のポリシーに違反しています: {', '.join(policy_names)}"
+                    error_msg = f"🚫 AIの応答が以下のポリシーに違反しています: {', '.join(policy_names)}"
                     
                     st.session_state.messages.append({
                         "role": "assistant",
@@ -372,15 +632,16 @@ if user_input or uploaded_file:
                     # 正常応答
                     st.session_state.messages.append({
                         "role": "assistant",
-                        "content": deepseek_response,
+                        "content": ai_response,
                         "violations": []
                     })
                     
                     with st.chat_message("assistant"):
-                        st.write(deepseek_response)
+                        st.write(ai_response)
+                        st.caption(f"⏱️ 応答時間: {elapsed_time:.1f}秒")
             else:
-                # DeepSeekエラー
-                error_msg = "❌ DeepSeek APIからの応答がありませんでした"
+                # AIエラー
+                error_msg = f"❌ {st.session_state.ai_model} APIからの応答がありませんでした"
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": error_msg,
@@ -394,5 +655,5 @@ if user_input or uploaded_file:
 
 # ==================== フッター ====================
 st.divider()
-st.caption("🔒 DDS + DeepSeek 統合コンテンツ検査ツール v2.0")
+st.caption("🔒 DDS + AI 統合コンテンツ検査ツール v2.0")
 st.caption("📖 DDS API: [Broadcom Documentation](https://techdocs.broadcom.com/us/en/symantec-security-software/information-security/data-loss-prevention/25-1/about-application-detection/overview-of-the-detection-rest-api-2-0.html)")
