@@ -1,8 +1,5 @@
-# メインパッケージ
 streamlit>=1.28.0
-
-# HTTPリクエスト
 requests>=2.31.0
-
-# その他（標準ライブラリだが念のため）
-python-dotenv>=1.0.0
+Pillow>=10.0.0
+numpy>=1.24.0  # もし画像を数値処理する場合
+python-dotenv>=1.0.0  # APIキーを環境変数で管理する場合
