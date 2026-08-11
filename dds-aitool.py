@@ -46,11 +46,13 @@ if "file_data" not in st.session_state:
 if "filename" not in st.session_state:
     st.session_state.filename = None
 if "ai_api_key" not in st.session_state:
-    st.session_state.ai_api_key = ""
+    st.session_state.ai_api_key = "ollama"
 if "ai_api_url" not in st.session_state:
-    st.session_state.ai_api_url = ""
+    st.session_state.ai_api_url = "http://localhost:11434/v1/chat/completions"
 if "ai_model" not in st.session_state:
-    st.session_state.ai_model = ""
+    st.session_state.ai_model = "llama3"
+if "selected_provider" not in st.session_state:
+    st.session_state.selected_provider = "ローカル (Ollama)"
 
 # ==================== AIプロバイダー設定 ====================
 AI_PROVIDERS = {
@@ -78,7 +80,7 @@ AI_PROVIDERS = {
     },
     "ローカル (Ollama)": {
         "url": "http://localhost:11434/v1/chat/completions",
-        "models": ["llama3", "mistral", "phi3", "gemma", "qwen"],
+        "models": ["llama3", "mistral", "phi3", "gemma", "qwen", "llama2", "codellama", "llava"],
         "default_model": "llama3",
         "api_key_required": False,
         "default_api_key": "ollama",
@@ -90,14 +92,6 @@ AI_PROVIDERS = {
         "default_model": "llama3-70b-8192",
         "api_key_required": True,
         "description": "Groq API"
-    },
-    "その他 (カスタム)": {
-        "url": "",
-        "models": [],
-        "default_model": "",
-        "api_key_required": True,
-        "custom": True,
-        "description": "カスタム設定"
     }
 }
 
@@ -237,7 +231,7 @@ def call_ai_api(messages, max_tokens=200):
         
         # APIキーが必須だが空の場合
         provider = st.session_state.selected_provider
-        if AI_PROVIDERS.get(provider, {}).get("api_key_required", True) and not api_key:
+        if provider in AI_PROVIDERS and AI_PROVIDERS[provider].get("api_key_required", True) and not api_key:
             st.error(f"{provider}はAPI Keyが必須です。API Keyを入力してください。")
             return None
         
@@ -294,12 +288,14 @@ with st.sidebar:
     # AI設定（統合）
     st.subheader("🤖 AI設定")
     
-    # プロバイダー選択
+    # プロバイダー選択（デフォルト: ローカル (Ollama)）
     provider_options = list(AI_PROVIDERS.keys())
+    default_index = provider_options.index("ローカル (Ollama)") if "ローカル (Ollama)" in provider_options else 0
+    
     selected_provider = st.selectbox(
         "AIプロバイダー",
         provider_options,
-        index=0,
+        index=default_index,
         help="使用するAIプロバイダーを選択してください"
     )
     st.session_state.selected_provider = selected_provider
@@ -309,68 +305,58 @@ with st.sidebar:
     # プロバイダー説明
     st.caption(f"📌 {provider_config.get('description', '')}")
     
-    # プロバイダーに応じた設定を自動適用
-    if provider_config.get("custom", False):
-        # カスタム（その他）の場合 - すべて自由入力
-        st.session_state.ai_api_url = st.text_input(
-            "API URL (カスタム)",
-            value=st.session_state.ai_api_url,
-            placeholder="https://your-api-endpoint.com/v1/chat/completions",
-            help="カスタムAPIのエンドポイントURLを入力してください"
+    # URLを自動設定
+    st.session_state.ai_api_url = provider_config["url"]
+    st.info(f"📡 API URL: {provider_config['url']}")
+    
+    # モデル選択（プルダウン + 「その他」オプション）
+    model_options = provider_config["models"].copy() if provider_config["models"] else []
+    model_options.append("その他 (カスタム)")
+    
+    # 現在のモデルがリストにあるかチェック
+    current_model = st.session_state.ai_model
+    if current_model not in model_options:
+        # カスタムモデルの場合
+        current_display = "その他 (カスタム)"
+    else:
+        current_display = current_model
+    
+    # モデル選択
+    selected_model = st.selectbox(
+        "モデル",
+        model_options,
+        index=model_options.index(current_display) if current_display in model_options else 0,
+        help="使用するモデルを選択してください。『その他』を選ぶと自由に入力できます"
+    )
+    
+    # モデル処理
+    if selected_model == "その他 (カスタム)":
+        # カスタムモデル名を自由入力
+        custom_model = st.text_input(
+            "カスタムモデル名",
+            value=st.session_state.ai_model if st.session_state.ai_model not in provider_config["models"] else "",
+            placeholder="モデル名を自由に入力してください",
+            help="任意のモデル名を入力できます"
         )
-        
-        st.session_state.ai_model = st.text_input(
-            "モデル名 (カスタム)",
-            value=st.session_state.ai_model,
-            placeholder="your-model-name",
-            help="使用するモデル名を自由に入力してください"
-        )
-        
+        if custom_model:
+            st.session_state.ai_model = custom_model
+    else:
+        st.session_state.ai_model = selected_model
+    
+    # API Key設定
+    if provider_config.get("api_key_required", True):
         st.session_state.ai_api_key = st.text_input(
             "API Key",
             value=st.session_state.ai_api_key,
             type="password",
-            placeholder="APIキーを入力（必要な場合）",
+            placeholder="APIキーを入力してください",
             help="APIアクセス用の認証キー"
         )
     else:
-        # プリセットプロバイダー
-        # URLを自動設定
-        st.session_state.ai_api_url = provider_config["url"]
-        st.info(f"📡 API URL: {provider_config['url']}")
-        
-        # モデル選択（プルダウン）
-        if provider_config["models"]:
-            # 現在のモデルがリストにない場合は最初のモデルを使用
-            current_model = st.session_state.ai_model
-            if current_model not in provider_config["models"]:
-                current_model = provider_config["default_model"]
-            
-            selected_model = st.selectbox(
-                "モデル",
-                provider_config["models"],
-                index=provider_config["models"].index(current_model) if current_model in provider_config["models"] else 0,
-                help="使用するモデルを選択してください"
-            )
-            st.session_state.ai_model = selected_model
-        else:
-            st.session_state.ai_model = provider_config["default_model"]
-            st.info(f"🤖 モデル: {provider_config['default_model']}")
-        
-        # API Key設定
-        if provider_config.get("api_key_required", True):
-            st.session_state.ai_api_key = st.text_input(
-                "API Key",
-                value=st.session_state.ai_api_key,
-                type="password",
-                placeholder="APIキーを入力してください",
-                help="APIアクセス用の認証キー"
-            )
-        else:
-            # APIキーが不要な場合（ローカルなど）
-            default_key = provider_config.get("default_api_key", "")
-            st.session_state.ai_api_key = default_key
-            st.info(f"🔑 API Key: {default_key} (自動設定)")
+        # APIキーが不要な場合（ローカルなど）
+        default_key = provider_config.get("default_api_key", "")
+        st.session_state.ai_api_key = default_key
+        st.info(f"🔑 API Key: {default_key} (自動設定)")
     
     # デバッグモード
     debug_mode = st.checkbox("🐛 デバッグモード", value=False, help="APIリクエストの詳細を表示")
