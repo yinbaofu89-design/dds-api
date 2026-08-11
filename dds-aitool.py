@@ -250,24 +250,73 @@ def call_ai_api(messages, max_tokens=200):
             "model": model_name,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.7
+            "temperature": 0.7,
+            "stream": False
         }
         
         response = requests.post(api_url, headers=headers, json=data, timeout=60)
         
         if response.status_code == 200:
             result = response.json()
+            
+            # デバッグ用にレスポンス全体を表示
+            if st.session_state.get("debug_mode", False):
+                st.write("**APIレスポンス:**")
+                st.json(result)
+            
+            # 様々なレスポンス形式に対応
+            content = None
+            reasoning = None
+            
+            # OpenAI互換形式
             if "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
+                choice = result["choices"][0]
+                message = choice.get("message", {})
+                
+                # contentを取得
+                content = message.get("content", "")
+                
+                # reasoning_content（Qwenなど）を取得
+                if "reasoning_content" in message:
+                    reasoning = message.get("reasoning_content", "")
+                
+                # もしcontentが空でreasoningがある場合、reasoningを表示
+                if not content and reasoning:
+                    return f"[推論: {reasoning}]"
+                
+                # 両方とも空の場合
+                if not content and not reasoning:
+                    st.warning("⚠️ AIからの応答が空です。モデルが正しく応答していない可能性があります。")
+                    st.info("💡 デバッグモードを有効にしてレスポンスを確認してください。")
+                    return "（応答がありませんでした）"
+                
+                return content
+            
+            # その他の形式（Ollamaの非互換形式など）
+            elif "response" in result:
+                return result["response"]
+            
             else:
                 st.error(f"予期しないレスポンス形式: {result}")
+                st.info("💡 デバッグモードを有効にしてレスポンスの構造を確認してください。")
                 return None
+                
         else:
             st.error(f"AI APIエラー: {response.status_code} - {response.text}")
             return None
             
+    except requests.exceptions.ConnectionError:
+        st.error(f"❌ 接続エラー: APIサーバー ({api_url}) に接続できませんでした")
+        st.info("💡 サーバーが起動しているか、URLが正しいか確認してください。")
+        return None
+    except requests.exceptions.Timeout:
+        st.error("❌ タイムアウト: サーバーからの応答がありませんでした")
+        return None
     except Exception as e:
         st.error(f"AI API呼び出しエラー: {e}")
+        import traceback
+        if st.session_state.get("debug_mode", False):
+            st.code(traceback.format_exc())
         return None
 
 # ==================== サイドバー設定 ====================
@@ -316,7 +365,6 @@ with st.sidebar:
     # 現在のモデルがリストにあるかチェック
     current_model = st.session_state.ai_model
     if current_model not in model_options:
-        # カスタムモデルの場合
         current_display = "その他 (カスタム)"
     else:
         current_display = current_model
@@ -331,7 +379,6 @@ with st.sidebar:
     
     # モデル処理
     if selected_model == "その他 (カスタム)":
-        # カスタムモデル名を自由入力
         custom_model = st.text_input(
             "カスタムモデル名",
             value=st.session_state.ai_model if st.session_state.ai_model not in provider_config["models"] else "",
@@ -353,13 +400,12 @@ with st.sidebar:
             help="APIアクセス用の認証キー"
         )
     else:
-        # APIキーが不要な場合（ローカルなど）
         default_key = provider_config.get("default_api_key", "")
         st.session_state.ai_api_key = default_key
         st.info(f"🔑 API Key: {default_key} (自動設定)")
     
     # デバッグモード
-    debug_mode = st.checkbox("🐛 デバッグモード", value=False, help="APIリクエストの詳細を表示")
+    debug_mode = st.checkbox("🐛 デバッグモード", value=False, help="APIリクエストとレスポンスの詳細を表示")
     st.session_state.debug_mode = debug_mode
     
     # 接続テストボタン
@@ -450,7 +496,6 @@ uploaded_file = st.file_uploader(
 
 # ファイルがアップロードされた場合の処理
 if uploaded_file:
-    # 前回と異なるファイルの場合、リセット
     if st.session_state.filename != uploaded_file.name:
         st.session_state.file_checked = False
         st.session_state.file_violations = []
@@ -459,7 +504,6 @@ if uploaded_file:
         st.session_state.file_data = uploaded_file.read()
         st.session_state.file_checked = False
     
-    # ファイル情報表示
     col1, col2, col3 = st.columns(3)
     with col1:
         st.info(f"📎 ファイル: {st.session_state.filename}")
@@ -468,17 +512,14 @@ if uploaded_file:
     with col3:
         st.info(f"📝 MIME: {get_mime_type(st.session_state.filename)}")
     
-    # まだ検査していない場合、DDSで検査
     if not st.session_state.file_checked:
         with st.spinner(f"🔍 DDSでファイルを検査中... (ファイル: {st.session_state.filename})"):
-            # プログレス表示用
             progress_bar = st.progress(0)
             for i in range(100):
                 time.sleep(0.02)
                 progress_bar.progress(i + 1)
             progress_bar.empty()
             
-            # DDS検査実行
             violations, request_id = check_dds(
                 "", 
                 "file", 
@@ -491,7 +532,6 @@ if uploaded_file:
             
             if violations:
                 st.session_state.file_approved = False
-                # 違反表示
                 policy_names = [v["name"] for v in violations]
                 st.error(f"🚫 ポリシー違反: {', '.join(policy_names)}")
                 st.warning("⚠️ このファイルはポリシーに違反しているため、AIに送信できません")
@@ -500,7 +540,6 @@ if uploaded_file:
                 st.success(f"✅ ファイル検査完了: ポリシー違反はありません (Request ID: {request_id})")
                 st.info("💬 メッセージを入力して送信すると、このファイルが添付されてAIに送信されます")
     
-    # 検査済みの場合の表示
     else:
         if st.session_state.file_violations:
             policy_names = [v["name"] for v in st.session_state.file_violations]
@@ -513,7 +552,6 @@ if uploaded_file:
 # ==================== メッセージ入力エリア ====================
 st.divider()
 
-# ファイルのみアップロードされた場合のメッセージ
 if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
     placeholder_text = "ファイルがアップロードされています。何を聞きたいですか？"
 elif uploaded_file and st.session_state.file_violations:
@@ -525,24 +563,18 @@ user_input = st.chat_input(placeholder_text)
 
 # ==================== メッセージ処理 ====================
 if user_input:
-    # ユーザーメッセージを表示
     with st.chat_message("user"):
         st.write(user_input)
         if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
             st.write(f"📎 {st.session_state.filename} (添付済み)")
     
-    # ===== DDSチェック（メッセージ） =====
     with st.spinner("🔍 DDSでメッセージをチェック中..."):
         violations = []
-        
-        # テキストメッセージをチェック
         if user_input:
             v, _ = check_dds(user_input, "text")
             violations.extend(v)
     
-    # ===== DDS結果処理 =====
     if violations:
-        # ポリシー違反あり
         policy_names = [v["name"] for v in violations]
         error_msg = f"🚫 以下のポリシーに違反しています: {', '.join(policy_names)}"
         
@@ -556,7 +588,6 @@ if user_input:
             st.error(error_msg)
         
     else:
-        # メッセージがクリア - AIに送信
         file_to_send = None
         filename_to_send = None
         
@@ -564,14 +595,10 @@ if user_input:
             file_to_send = st.session_state.file_data
             filename_to_send = st.session_state.filename
         
-        # AI送信開始時間
         start_time = time.time()
-        
-        # プログレス表示用のプレースホルダー
         status_placeholder = st.empty()
         
         with st.spinner(f"🤖 {st.session_state.ai_model} に送信中..."):
-            # 経過時間表示用のループ
             def update_status():
                 elapsed = 0
                 while True:
@@ -583,40 +610,30 @@ if user_input:
                     if elapsed > 30:
                         status_placeholder.warning(f"⏳ AI応答を待っています... ({elapsed}秒経過) 応答に時間がかかっています")
             
-            # ステータス更新スレッド開始
             status_thread = threading.Thread(target=update_status, daemon=True)
             status_thread.start()
             
-            # AI用メッセージ作成
             ai_messages = []
-            
-            # 過去の履歴を追加（違反メッセージは除く）
             for msg in st.session_state.messages:
                 if msg["role"] != "assistant" or "violations" not in msg:
                     ai_messages.append({"role": msg["role"], "content": msg["content"]})
             
-            # 現在のメッセージを追加
             current_msg = user_input
             if file_to_send and filename_to_send:
                 current_msg += f"\n[添付ファイル: {filename_to_send}, サイズ: {len(file_to_send)}バイト]"
             
             ai_messages.append({"role": "user", "content": current_msg})
             
-            # AI呼び出し
             ai_response = call_ai_api(ai_messages, max_tokens=200)
             
-            # ステータス更新を停止
             status_placeholder.empty()
-            
             elapsed_time = time.time() - start_time
             
             if ai_response:
-                # AIの応答をDDSでチェック
                 with st.spinner("🔍 AI応答をDDSで再チェック中..."):
                     v, _ = check_dds(ai_response, "text")
                 
                 if v:
-                    # AI応答がポリシー違反
                     policy_names = [v["name"] for v in v]
                     error_msg = f"🚫 AIの応答が以下のポリシーに違反しています: {', '.join(policy_names)}"
                     
@@ -629,7 +646,6 @@ if user_input:
                     with st.chat_message("assistant"):
                         st.error(error_msg)
                 else:
-                    # 正常応答
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": ai_response,
@@ -640,7 +656,6 @@ if user_input:
                         st.write(ai_response)
                         st.caption(f"⏱️ 応答時間: {elapsed_time:.1f}秒")
             else:
-                # AIエラー
                 error_msg = f"❌ {st.session_state.ai_model} APIからの応答がありませんでした"
                 st.session_state.messages.append({
                     "role": "assistant",
@@ -650,7 +665,6 @@ if user_input:
                 with st.chat_message("assistant"):
                     st.error(error_msg)
     
-    # ページ更新
     st.rerun()
 
 # ==================== フッター ====================
