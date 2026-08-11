@@ -267,7 +267,7 @@ def send_detection_request(file_obj, source_type, dds_url, verify_ssl, data_type
             request_data = {
                 "context": [
                     {"name": "common.dataType", "value": ["DIM"]},
-                    {"name": "common.application", "value": ["securlet.box"]},
+                    {"name": "common.application", "value": ["customAI"]},
                     {"name": "common.transactionId", "value": [st.session_state.txid]},
                     {"name": "common.filter", "value": [f["id"] for f in st.session_state.filters]},
                     {"name": "common.expectActionsAck", "value": ["true"]}
@@ -294,7 +294,7 @@ def send_detection_request(file_obj, source_type, dds_url, verify_ssl, data_type
             request_data = {
                 "context": [
                     {"name": "common.dataType", "value": [data_type]},
-                    {"name": "common.application", "value": ["securlet.box"]},
+                    {"name": "common.application", "value": ["customAI"]},
                     {"name": "common.transactionId", "value": [st.session_state.txid]},
                     {"name": "common.filter", "value": [f["id"] for f in st.session_state.filters]},
                     {"name": "common.expectActionsAck", "value": ["true"]}
