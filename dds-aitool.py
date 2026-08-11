@@ -46,13 +46,13 @@ if "file_data" not in st.session_state:
 if "filename" not in st.session_state:
     st.session_state.filename = None
 if "ai_api_key" not in st.session_state:
-    st.session_state.ai_api_key = "ollama"
+    st.session_state.ai_api_key = "1234"  # LM Studio デフォルト
 if "ai_api_url" not in st.session_state:
-    st.session_state.ai_api_url = "http://localhost:11434/v1/chat/completions"
+    st.session_state.ai_api_url = "http://localhost:1234/v1"  # LM Studio デフォルト
 if "ai_model" not in st.session_state:
-    st.session_state.ai_model = "llama3"
+    st.session_state.ai_model = "Qwen3 8B - Q4_K_M"  # LM Studio デフォルトモデル
 if "selected_provider" not in st.session_state:
-    st.session_state.selected_provider = "ローカル (Ollama)"
+    st.session_state.selected_provider = "ローカル (LM Studio)"  # デフォルトをLM Studioに変更
 
 # ==================== AIプロバイダー設定 ====================
 AI_PROVIDERS = {
@@ -337,9 +337,9 @@ with st.sidebar:
     # AI設定（統合）
     st.subheader("🤖 AI設定")
     
-    # プロバイダー選択（デフォルト: ローカル (Ollama)）
+    # プロバイダー選択（デフォルト: ローカル (LM Studio)）
     provider_options = list(AI_PROVIDERS.keys())
-    default_index = provider_options.index("ローカル (Ollama)") if "ローカル (Ollama)" in provider_options else 0
+    default_index = provider_options.index("ローカル (LM Studio)") if "ローカル (LM Studio)" in provider_options else 0
     
     selected_provider = st.selectbox(
         "AIプロバイダー",
@@ -563,18 +563,31 @@ user_input = st.chat_input(placeholder_text)
 
 # ==================== メッセージ処理 ====================
 if user_input:
+    # ユーザーメッセージを表示
     with st.chat_message("user"):
         st.write(user_input)
         if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
             st.write(f"📎 {st.session_state.filename} (添付済み)")
     
+    # ===== DDSチェック（メッセージ） =====
     with st.spinner("🔍 DDSでメッセージをチェック中..."):
         violations = []
-        if user_input:
-            v, _ = check_dds(user_input, "text")
+        
+        # テキストメッセージをチェック（メッセージがある場合のみ）
+        if user_input and user_input.strip():
+            v, request_id = check_dds(user_input, "text")
             violations.extend(v)
+            if st.session_state.get("debug_mode", False):
+                st.write(f"📌 DDS Request ID: {request_id}")
+        
+        # ファイルがある場合もチェック（ファイルが承認済みの場合）
+        if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
+            # ファイルは既にチェック済みなので、ここでは追加のチェックはしない
+            pass
     
+    # ===== DDS結果処理 =====
     if violations:
+        # ポリシー違反あり
         policy_names = [v["name"] for v in violations]
         error_msg = f"🚫 以下のポリシーに違反しています: {', '.join(policy_names)}"
         
@@ -588,6 +601,7 @@ if user_input:
             st.error(error_msg)
         
     else:
+        # メッセージがクリア - AIに送信
         file_to_send = None
         filename_to_send = None
         
@@ -595,10 +609,14 @@ if user_input:
             file_to_send = st.session_state.file_data
             filename_to_send = st.session_state.filename
         
+        # AI送信開始時間
         start_time = time.time()
+        
+        # プログレス表示用のプレースホルダー
         status_placeholder = st.empty()
         
         with st.spinner(f"🤖 {st.session_state.ai_model} に送信中..."):
+            # 経過時間表示用のループ
             def update_status():
                 elapsed = 0
                 while True:
@@ -610,30 +628,40 @@ if user_input:
                     if elapsed > 30:
                         status_placeholder.warning(f"⏳ AI応答を待っています... ({elapsed}秒経過) 応答に時間がかかっています")
             
+            # ステータス更新スレッド開始
             status_thread = threading.Thread(target=update_status, daemon=True)
             status_thread.start()
             
+            # AI用メッセージ作成
             ai_messages = []
+            
+            # 過去の履歴を追加（違反メッセージは除く）
             for msg in st.session_state.messages:
                 if msg["role"] != "assistant" or "violations" not in msg:
                     ai_messages.append({"role": msg["role"], "content": msg["content"]})
             
+            # 現在のメッセージを追加
             current_msg = user_input
             if file_to_send and filename_to_send:
                 current_msg += f"\n[添付ファイル: {filename_to_send}, サイズ: {len(file_to_send)}バイト]"
             
             ai_messages.append({"role": "user", "content": current_msg})
             
+            # AI呼び出し
             ai_response = call_ai_api(ai_messages, max_tokens=200)
             
+            # ステータス更新を停止
             status_placeholder.empty()
+            
             elapsed_time = time.time() - start_time
             
             if ai_response:
+                # AIの応答をDDSでチェック
                 with st.spinner("🔍 AI応答をDDSで再チェック中..."):
                     v, _ = check_dds(ai_response, "text")
                 
                 if v:
+                    # AI応答がポリシー違反
                     policy_names = [v["name"] for v in v]
                     error_msg = f"🚫 AIの応答が以下のポリシーに違反しています: {', '.join(policy_names)}"
                     
@@ -646,6 +674,7 @@ if user_input:
                     with st.chat_message("assistant"):
                         st.error(error_msg)
                 else:
+                    # 正常応答
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": ai_response,
@@ -656,6 +685,7 @@ if user_input:
                         st.write(ai_response)
                         st.caption(f"⏱️ 応答時間: {elapsed_time:.1f}秒")
             else:
+                # AIエラー
                 error_msg = f"❌ {st.session_state.ai_model} APIからの応答がありませんでした"
                 st.session_state.messages.append({
                     "role": "assistant",
@@ -665,6 +695,7 @@ if user_input:
                 with st.chat_message("assistant"):
                     st.error(error_msg)
     
+    # ページ更新
     st.rerun()
 
 # ==================== フッター ====================
