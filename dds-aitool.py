@@ -46,13 +46,13 @@ if "file_data" not in st.session_state:
 if "filename" not in st.session_state:
     st.session_state.filename = None
 if "ai_api_key" not in st.session_state:
-    st.session_state.ai_api_key = "1234"  # LM Studio デフォルト
+    st.session_state.ai_api_key = "1234"
 if "ai_api_url" not in st.session_state:
-    st.session_state.ai_api_url = "http://localhost:1234/v1"  # LM Studio デフォルト
+    st.session_state.ai_api_url = "http://localhost:1234/v1"
 if "ai_model" not in st.session_state:
-    st.session_state.ai_model = "Qwen3 8B - Q4_K_M"  # LM Studio デフォルトモデル
+    st.session_state.ai_model = "Qwen3 8B - Q4_K_M"
 if "selected_provider" not in st.session_state:
-    st.session_state.selected_provider = "ローカル (LM Studio)"  # デフォルトをLM Studioに変更
+    st.session_state.selected_provider = "ローカル (LM Studio)"
 
 # ==================== AIプロバイダー設定 ====================
 AI_PROVIDERS = {
@@ -124,7 +124,7 @@ def get_mime_type(filename):
 def check_dds(content, content_type="text", filename=None, file_data=None):
     """
     DDSでコンテンツを検査
-    戻り値: (violations, request_id)
+    戻り値: (violations, request_id, response_data)
     violations: 違反ポリシーのリスト [{"policyId": "xxx", "name": "xxx"}, ...]
     """
     try:
@@ -192,13 +192,13 @@ def check_dds(content, content_type="text", filename=None, file_data=None):
             result = response.json()
             violations = result.get("violation", [])
             request_id = result.get("requestId")
-            return violations, request_id
+            return violations, request_id, result
         else:
-            return [], None
+            return [], None, None
             
     except Exception as e:
         st.error(f"DDSチェックエラー: {e}")
-        return [], None
+        return [], None, None
 
 # ==================== AI API呼び出し（汎用） ====================
 def normalize_api_url(url):
@@ -234,12 +234,6 @@ def call_ai_api(messages, max_tokens=200):
         if provider in AI_PROVIDERS and AI_PROVIDERS[provider].get("api_key_required", True) and not api_key:
             st.error(f"{provider}はAPI Keyが必須です。API Keyを入力してください。")
             return None
-        
-        # デバッグ情報
-        if st.session_state.get("debug_mode", False):
-            st.write(f"**API URL:** {api_url}")
-            st.write(f"**モデル:** {model_name}")
-            st.write(f"**プロバイダー:** {provider}")
         
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -287,7 +281,6 @@ def call_ai_api(messages, max_tokens=200):
                 # 両方とも空の場合
                 if not content and not reasoning:
                     st.warning("⚠️ AIからの応答が空です。モデルが正しく応答していない可能性があります。")
-                    st.info("💡 デバッグモードを有効にしてレスポンスを確認してください。")
                     return "（応答がありませんでした）"
                 
                 return content
@@ -298,7 +291,6 @@ def call_ai_api(messages, max_tokens=200):
             
             else:
                 st.error(f"予期しないレスポンス形式: {result}")
-                st.info("💡 デバッグモードを有効にしてレスポンスの構造を確認してください。")
                 return None
                 
         else:
@@ -520,7 +512,7 @@ if uploaded_file:
                 progress_bar.progress(i + 1)
             progress_bar.empty()
             
-            violations, request_id = check_dds(
+            violations, request_id, response_data = check_dds(
                 "", 
                 "file", 
                 st.session_state.filename, 
@@ -538,6 +530,9 @@ if uploaded_file:
             else:
                 st.session_state.file_approved = True
                 st.success(f"✅ ファイル検査完了: ポリシー違反はありません (Request ID: {request_id})")
+                if response_data:
+                    with st.expander("📋 DDSレスポンス詳細"):
+                        st.json(response_data)
                 st.info("💬 メッセージを入力して送信すると、このファイルが添付されてAIに送信されます")
     
     else:
@@ -569,25 +564,31 @@ if user_input:
         if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
             st.write(f"📎 {st.session_state.filename} (添付済み)")
     
-    # ===== DDSチェック（メッセージ） =====
-    with st.spinner("🔍 DDSでメッセージをチェック中..."):
-        violations = []
-        
-        # テキストメッセージをチェック（メッセージがある場合のみ）
-        if user_input and user_input.strip():
-            v, request_id = check_dds(user_input, "text")
-            violations.extend(v)
-            if st.session_state.get("debug_mode", False):
-                st.write(f"📌 DDS Request ID: {request_id}")
-        
-        # ファイルがある場合もチェック（ファイルが承認済みの場合）
-        if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
-            # ファイルは既にチェック済みなので、ここでは追加のチェックはしない
-            pass
+    # ===== ステップ1: DDSチェック（メッセージ） =====
+    status_message = st.info("🔍 DDSでメッセージを検査中...")
     
-    # ===== DDS結果処理 =====
+    violations = []
+    dds_response_data = None
+    dds_request_id = None
+    
+    # テキストメッセージをチェック（メッセージがある場合のみ）
+    if user_input and user_input.strip():
+        violations, dds_request_id, dds_response_data = check_dds(user_input, "text")
+    
+    # DDSチェック結果を表示
+    if dds_request_id:
+        status_message.empty()
+        st.info(f"✅ DDS検査完了 (Request ID: {dds_request_id})")
+        
+        # DDSレスポンス詳細を表示
+        if dds_response_data:
+            with st.expander("📋 DDSレスポンス詳細"):
+                st.json(dds_response_data)
+    
+    # ポリシー違反チェック
     if violations:
         # ポリシー違反あり
+        status_message.empty()
         policy_names = [v["name"] for v in violations]
         error_msg = f"🚫 以下のポリシーに違反しています: {', '.join(policy_names)}"
         
@@ -600,100 +601,123 @@ if user_input:
         with st.chat_message("assistant"):
             st.error(error_msg)
         
-    else:
-        # メッセージがクリア - AIに送信
-        file_to_send = None
-        filename_to_send = None
+        st.rerun()
+        st.stop()
+    
+    # ポリシー違反なし
+    status_message.empty()
+    st.success("✅ ポリシー違反はありませんでした")
+    
+    # ===== ステップ2: AI送信 =====
+    # ファイルが承認済みかチェック
+    file_to_send = None
+    filename_to_send = None
+    
+    if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
+        file_to_send = st.session_state.file_data
+        filename_to_send = st.session_state.filename
+    
+    # AI送信開始時間
+    start_time = time.time()
+    
+    # プログレス表示用のプレースホルダー
+    status_placeholder = st.empty()
+    status_placeholder.info(f"🤖 AI応答を待っています... (0秒経過)")
+    
+    with st.spinner(f"🤖 {st.session_state.ai_model} に送信中..."):
+        # 経過時間表示用のループ
+        def update_status():
+            elapsed = 0
+            while True:
+                time.sleep(1)
+                elapsed += 1
+                status_placeholder.info(f"🤖 AI応答を待っています... ({elapsed}秒経過)")
+                if elapsed > 10:
+                    status_placeholder.info(f"🤖 AI応答を待っています... ({elapsed}秒経過) 少々お待ちください")
+                if elapsed > 30:
+                    status_placeholder.warning(f"🤖 AI応答を待っています... ({elapsed}秒経過) 応答に時間がかかっています")
         
-        if uploaded_file and st.session_state.file_approved and not st.session_state.file_violations:
-            file_to_send = st.session_state.file_data
-            filename_to_send = st.session_state.filename
+        # ステータス更新スレッド開始
+        status_thread = threading.Thread(target=update_status, daemon=True)
+        status_thread.start()
         
-        # AI送信開始時間
-        start_time = time.time()
+        # AI用メッセージ作成
+        ai_messages = []
         
-        # プログレス表示用のプレースホルダー
-        status_placeholder = st.empty()
+        # 過去の履歴を追加（違反メッセージは除く）
+        for msg in st.session_state.messages:
+            if msg["role"] != "assistant" or "violations" not in msg:
+                ai_messages.append({"role": msg["role"], "content": msg["content"]})
         
-        with st.spinner(f"🤖 {st.session_state.ai_model} に送信中..."):
-            # 経過時間表示用のループ
-            def update_status():
-                elapsed = 0
-                while True:
-                    time.sleep(1)
-                    elapsed += 1
-                    status_placeholder.info(f"⏳ AI応答を待っています... ({elapsed}秒経過)")
-                    if elapsed > 10:
-                        status_placeholder.info(f"⏳ AI応答を待っています... ({elapsed}秒経過) 少々お待ちください")
-                    if elapsed > 30:
-                        status_placeholder.warning(f"⏳ AI応答を待っています... ({elapsed}秒経過) 応答に時間がかかっています")
+        # 現在のメッセージを追加
+        current_msg = user_input
+        if file_to_send and filename_to_send:
+            current_msg += f"\n[添付ファイル: {filename_to_send}, サイズ: {len(file_to_send)}バイト]"
+        
+        ai_messages.append({"role": "user", "content": current_msg})
+        
+        # AI呼び出し
+        ai_response = call_ai_api(ai_messages, max_tokens=200)
+        
+        # ステータス更新を停止
+        status_placeholder.empty()
+        
+        elapsed_time = time.time() - start_time
+        
+        if ai_response:
+            # ===== ステップ3: AI応答をDDSで再チェック =====
+            status_message2 = st.info("🔍 AIの回答をDDSで検査中...")
             
-            # ステータス更新スレッド開始
-            status_thread = threading.Thread(target=update_status, daemon=True)
-            status_thread.start()
+            # AIの応答をDDSでチェック
+            v, request_id2, response_data2 = check_dds(ai_response, "text")
             
-            # AI用メッセージ作成
-            ai_messages = []
-            
-            # 過去の履歴を追加（違反メッセージは除く）
-            for msg in st.session_state.messages:
-                if msg["role"] != "assistant" or "violations" not in msg:
-                    ai_messages.append({"role": msg["role"], "content": msg["content"]})
-            
-            # 現在のメッセージを追加
-            current_msg = user_input
-            if file_to_send and filename_to_send:
-                current_msg += f"\n[添付ファイル: {filename_to_send}, サイズ: {len(file_to_send)}バイト]"
-            
-            ai_messages.append({"role": "user", "content": current_msg})
-            
-            # AI呼び出し
-            ai_response = call_ai_api(ai_messages, max_tokens=200)
-            
-            # ステータス更新を停止
-            status_placeholder.empty()
-            
-            elapsed_time = time.time() - start_time
-            
-            if ai_response:
-                # AIの応答をDDSでチェック
-                with st.spinner("🔍 AI応答をDDSで再チェック中..."):
-                    v, _ = check_dds(ai_response, "text")
+            if request_id2:
+                status_message2.empty()
+                st.info(f"✅ AI応答のDDS検査完了 (Request ID: {request_id2})")
                 
-                if v:
-                    # AI応答がポリシー違反
-                    policy_names = [v["name"] for v in v]
-                    error_msg = f"🚫 AIの応答が以下のポリシーに違反しています: {', '.join(policy_names)}"
-                    
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": error_msg,
-                        "violations": v
-                    })
-                    
-                    with st.chat_message("assistant"):
-                        st.error(error_msg)
-                else:
-                    # 正常応答
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": ai_response,
-                        "violations": []
-                    })
-                    
-                    with st.chat_message("assistant"):
-                        st.write(ai_response)
-                        st.caption(f"⏱️ 応答時間: {elapsed_time:.1f}秒")
-            else:
-                # AIエラー
-                error_msg = f"❌ {st.session_state.ai_model} APIからの応答がありませんでした"
+                # DDSレスポンス詳細を表示
+                if response_data2:
+                    with st.expander("📋 AI応答のDDSレスポンス詳細"):
+                        st.json(response_data2)
+            
+            if v:
+                # AI応答がポリシー違反
+                status_message2.empty()
+                policy_names = [v["name"] for v in v]
+                error_msg = f"🚫 AIの回答にDLP違反した内容がありました。表示できません。\n違反ポリシー: {', '.join(policy_names)}"
+                
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": error_msg,
-                    "violations": []
+                    "violations": v
                 })
+                
                 with st.chat_message("assistant"):
                     st.error(error_msg)
+            else:
+                # 正常応答
+                status_message2.empty()
+                st.success("✅ AI応答のポリシー違反はありませんでした")
+                
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": ai_response,
+                    "violations": []
+                })
+                
+                with st.chat_message("assistant"):
+                    st.write(ai_response)
+                    st.caption(f"⏱️ 応答時間: {elapsed_time:.1f}秒")
+        else:
+            # AIエラー
+            error_msg = f"❌ {st.session_state.ai_model} APIからの応答がありませんでした"
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": error_msg,
+                "violations": []
+            })
+            with st.chat_message("assistant"):
+                st.error(error_msg)
     
     # ページ更新
     st.rerun()
