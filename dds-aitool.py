@@ -58,40 +58,46 @@ AI_PROVIDERS = {
         "url": "https://api.deepseek.com/v1/chat/completions",
         "models": ["deepseek-chat", "deepseek-coder"],
         "default_model": "deepseek-chat",
-        "api_key_required": True
+        "api_key_required": True,
+        "description": "DeepSeek API"
     },
     "OpenAI": {
         "url": "https://api.openai.com/v1/chat/completions",
         "models": ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
         "default_model": "gpt-3.5-turbo",
-        "api_key_required": True
+        "api_key_required": True,
+        "description": "OpenAI API"
     },
     "ローカル (LM Studio)": {
         "url": "http://localhost:1234/v1",
         "models": ["Qwen3 8B - Q4_K_M", "llama3-8b", "mistral-7b", "phi-3", "gemma-2b"],
         "default_model": "Qwen3 8B - Q4_K_M",
         "api_key_required": False,
-        "default_api_key": "1234"
+        "default_api_key": "1234",
+        "description": "LM Studio ローカルサーバー"
     },
     "ローカル (Ollama)": {
         "url": "http://localhost:11434/v1/chat/completions",
         "models": ["llama3", "mistral", "phi3", "gemma", "qwen"],
         "default_model": "llama3",
         "api_key_required": False,
-        "default_api_key": "ollama"
+        "default_api_key": "ollama",
+        "description": "Ollama ローカルサーバー"
     },
     "Groq": {
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "models": ["llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma2-9b-it"],
         "default_model": "llama3-70b-8192",
-        "api_key_required": True
+        "api_key_required": True,
+        "description": "Groq API"
     },
     "その他 (カスタム)": {
         "url": "",
         "models": [],
         "default_model": "",
         "api_key_required": True,
-        "custom": True
+        "custom": True,
+        "description": "カスタム設定"
     }
 }
 
@@ -300,9 +306,12 @@ with st.sidebar:
     
     provider_config = AI_PROVIDERS[selected_provider]
     
+    # プロバイダー説明
+    st.caption(f"📌 {provider_config.get('description', '')}")
+    
     # プロバイダーに応じた設定を自動適用
     if provider_config.get("custom", False):
-        # カスタム（その他）の場合
+        # カスタム（その他）の場合 - すべて自由入力
         st.session_state.ai_api_url = st.text_input(
             "API URL (カスタム)",
             value=st.session_state.ai_api_url,
@@ -314,14 +323,14 @@ with st.sidebar:
             "モデル名 (カスタム)",
             value=st.session_state.ai_model,
             placeholder="your-model-name",
-            help="使用するモデル名を入力してください"
+            help="使用するモデル名を自由に入力してください"
         )
         
         st.session_state.ai_api_key = st.text_input(
             "API Key",
             value=st.session_state.ai_api_key,
             type="password",
-            placeholder="APIキーを入力",
+            placeholder="APIキーを入力（必要な場合）",
             help="APIアクセス用の認証キー"
         )
     else:
@@ -330,12 +339,17 @@ with st.sidebar:
         st.session_state.ai_api_url = provider_config["url"]
         st.info(f"📡 API URL: {provider_config['url']}")
         
-        # モデル選択
+        # モデル選択（プルダウン）
         if provider_config["models"]:
+            # 現在のモデルがリストにない場合は最初のモデルを使用
+            current_model = st.session_state.ai_model
+            if current_model not in provider_config["models"]:
+                current_model = provider_config["default_model"]
+            
             selected_model = st.selectbox(
                 "モデル",
                 provider_config["models"],
-                index=0,
+                index=provider_config["models"].index(current_model) if current_model in provider_config["models"] else 0,
                 help="使用するモデルを選択してください"
             )
             st.session_state.ai_model = selected_model
